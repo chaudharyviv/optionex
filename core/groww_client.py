@@ -89,7 +89,7 @@ class GrowwClient:
         df = self.get_instruments_df()
         return df[
             (df["exchange"] == "NSE") &
-            (df["segment"] == "NFO")
+            (df["segment"] == "FNO")
         ].copy()
 
     def get_nfo_options(self, underlying: str) -> pd.DataFrame:
@@ -112,36 +112,45 @@ class GrowwClient:
     def get_nse_spot(self, index: str) -> Optional[float]:
         """
         Get current spot price for NIFTY or BANKNIFTY.
-        Uses the index LTP from Groww API.
+        Tries multiple approaches:
+          1. CASH segment with known index symbols
+          2. Fallback to near-month futures LTP (close proxy)
         """
-        try:
-            # Groww uses specific trading symbols for indices
-            index_symbols = {
-                "NIFTY":     "NIFTY 50",
-                "BANKNIFTY": "NIFTY BANK",
-            }
-            symbol = index_symbols.get(index.upper())
-            if not symbol:
-                logger.warning(f"Unknown index: {index}")
-                return None
+        # Approach 1: Direct index LTP via CASH segment
+        # Groww may use different symbol formats — try common ones
+        candidate_symbols = {
+            "NIFTY":     ["NIFTY 50", "NIFTY", "Nifty 50"],
+            "BANKNIFTY": ["NIFTY BANK", "BANKNIFTY", "Nifty Bank"],
+        }
+        symbols = candidate_symbols.get(index.upper(), [index])
 
-            result = self._groww.get_ltp(
-                segment=self._groww.SEGMENT_EQUITY,
-                exchange_trading_symbols=f"NSE_{symbol}",
-            )
-            if result:
-                key = f"NSE_{symbol}"
-                if key in result:
-                    ltp = float(result[key])
-                    logger.info(f"Spot {index}: {ltp:,.2f}")
-                    return ltp
-                # Try first value
-                for v in result.values():
-                    return float(v)
-            return None
-        except Exception as e:
-            logger.error(f"get_nse_spot({index}) failed: {e}")
-            return None
+        for symbol in symbols:
+            try:
+                result = self._groww.get_ltp(
+                    segment=self._groww.SEGMENT_CASH,
+                    exchange_trading_symbols=f"NSE_{symbol}",
+                )
+                if result:
+                    for v in result.values():
+                        ltp = float(v)
+                        if ltp > 0:
+                            logger.info(f"Spot {index}: {ltp:,.2f} (via {symbol})")
+                            return ltp
+            except Exception:
+                continue
+
+        # Approach 2: Use near-month futures as proxy
+        try:
+            fut = self.get_nse_futures_price(index)
+            if fut and fut.get("ltp"):
+                ltp = float(fut["ltp"])
+                logger.info(f"Spot {index}: {ltp:,.2f} (via futures proxy)")
+                return ltp
+        except Exception:
+            pass
+
+        logger.warning(f"get_nse_spot({index}): all approaches failed")
+        return None
 
     # ── Futures Price ────────────────────────────────────────────
 
@@ -173,7 +182,7 @@ class GrowwClient:
             ts = near["trading_symbol"]
 
             ltp_result = self._groww.get_ltp(
-                segment=self._groww.SEGMENT_DERIVATIVE,
+                segment=self._groww.SEGMENT_FNO,
                 exchange_trading_symbols=f"NSE_{ts}",
             )
             ltp = 0.0
@@ -197,49 +206,46 @@ class GrowwClient:
         Fetch India VIX (volatility index).
         Returns dict with vix, change_pct, available.
         """
-        try:
-            result = self._groww.get_ltp(
-                segment=self._groww.SEGMENT_EQUITY,
-                exchange_trading_symbols="NSE_INDIA VIX",
-            )
-            if result:
-                vix = float(list(result.values())[0])
-                return {
-                    "vix":        vix,
-                    "change_pct": 0.0,  # delta from previous close needs quote
-                    "available":  True,
-                    "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            return {"available": False, "vix": None}
-        except Exception as e:
-            logger.warning(f"India VIX fetch failed: {e}")
-            return {"available": False, "vix": None, "error": str(e)}
+        vix_symbols = ["INDIA VIX", "INDIAVIX", "India VIX"]
+        for symbol in vix_symbols:
+            try:
+                result = self._groww.get_ltp(
+                    segment=self._groww.SEGMENT_CASH,
+                    exchange_trading_symbols=f"NSE_{symbol}",
+                )
+                if result:
+                    vix = float(list(result.values())[0])
+                    if vix > 0:
+                        return {
+                            "vix":        vix,
+                            "change_pct": 0.0,
+                            "available":  True,
+                            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+            except Exception:
+                continue
+
+        logger.warning("India VIX: all symbol formats failed")
+        return {"available": False, "vix": None}
 
     # ── Option Chain ─────────────────────────────────────────────
 
-    def get_option_chain(self, index: str) -> Optional[dict]:
+    def get_option_chain(
+        self,
+        index:           str,
+        strikes_each_side: int = 15,
+    ) -> Optional[dict]:
         """
-        Build complete option chain for an index.
+        Build option chain for an index, filtered to strikes near ATM.
+
+        Only fetches ~30 strikes (±15 around ATM) to avoid thousands
+        of API calls. Each strike needs a get_quote() for OI data.
 
         Returns:
         {
             "chain":          [list of strike dicts],
             "expiries":       ["2026-03-27", ...],
             "nearest_expiry": "2026-03-27",
-        }
-
-        Each strike dict:
-        {
-            "strike":      23500.0,
-            "expiry":      "2026-03-27",
-            "call_ltp":    150.0,
-            "call_oi":     1250000,
-            "call_volume": 45000,
-            "call_iv":     12.5,
-            "put_ltp":     140.0,
-            "put_oi":      980000,
-            "put_volume":  38000,
-            "put_iv":      13.2,
         }
         """
         try:
@@ -250,38 +256,50 @@ class GrowwClient:
 
             # Get available expiries
             expiries = sorted(options_df["expiry_date"].dropna().unique())
-            expiry_strs = [str(e.date()) if hasattr(e, 'date') else str(e)[:10]
-                          for e in expiries]
-
+            expiry_strs = [
+                str(e.date()) if hasattr(e, "date") else str(e)[:10]
+                for e in expiries
+            ]
             if not expiry_strs:
                 return None
 
             nearest_expiry = expiry_strs[0]
+            nearest_dt     = expiries[0]
 
-            # Filter to nearest expiry for main chain
-            nearest_dt = expiries[0]
+            # Filter to nearest expiry
             chain_df = options_df[options_df["expiry_date"] == nearest_dt]
+            all_strikes = sorted(chain_df["strike_price"].dropna().unique())
 
-            # Get unique strikes
-            strikes = sorted(chain_df["strike_price"].dropna().unique())
+            if not all_strikes:
+                return None
 
-            # Build chain: get LTP and OI for each strike
-            # Strategy: try batch LTP first for speed, then individual quotes for OI
-            chain = []
-
-            # ── Get spot price for IV solver ──────────────
-            spot_price = None
-            try:
-                spot_price = self.get_nse_spot(index)
-            except Exception:
-                pass
+            # ── Get spot price to find ATM ─────────────────
+            spot_price = self.get_nse_spot(index)
+            if not spot_price:
+                # Fallback: use middle strike
+                spot_price = float(all_strikes[len(all_strikes) // 2])
 
             dte = max(1, (nearest_dt - pd.Timestamp.today().normalize()).days)
 
-            # ── Collect trading symbols for batch LTP ─────
-            ce_symbols = {}   # strike → trading_symbol
+            # ── Filter to ±N strikes around ATM ───────────
+            atm_idx = min(
+                range(len(all_strikes)),
+                key=lambda i: abs(float(all_strikes[i]) - spot_price),
+            )
+            start = max(0, atm_idx - strikes_each_side)
+            end   = min(len(all_strikes), atm_idx + strikes_each_side + 1)
+            selected_strikes = all_strikes[start:end]
+
+            logger.info(
+                f"Chain filter: {len(all_strikes)} total strikes → "
+                f"{len(selected_strikes)} selected "
+                f"(ATM≈{all_strikes[atm_idx]}, spot={spot_price:,.0f})"
+            )
+
+            # ── Map strikes to trading symbols ─────────────
+            ce_symbols = {}
             pe_symbols = {}
-            for strike in strikes:
+            for strike in selected_strikes:
                 ce = chain_df[
                     (chain_df["strike_price"] == strike) &
                     (chain_df["instrument_type"] == "CE")
@@ -295,77 +313,91 @@ class GrowwClient:
                 if not pe.empty:
                     pe_symbols[strike] = pe.iloc[0]["trading_symbol"]
 
-            # ── Batch LTP fetch (much faster than N individual calls) ──
-            all_ts = []
-            ts_to_strike_type = {}
+            # ── Batch LTP for all selected strikes ─────────
+            # Groww API limit: max 50 symbols per get_ltp call
+            all_ts_keys = []
             for strike, ts in ce_symbols.items():
-                key = f"NSE_{ts}"
-                all_ts.append(key)
-                ts_to_strike_type[key] = (strike, "CE", ts)
+                all_ts_keys.append(f"NSE_{ts}")
             for strike, ts in pe_symbols.items():
-                key = f"NSE_{ts}"
-                all_ts.append(key)
-                ts_to_strike_type[key] = (strike, "PE", ts)
+                all_ts_keys.append(f"NSE_{ts}")
 
             batch_ltp = {}
-            try:
-                if len(all_ts) == 1:
-                    batch_ltp = self._groww.get_ltp(
-                        segment=self._groww.SEGMENT_DERIVATIVE,
-                        exchange_trading_symbols=all_ts[0],
-                    ) or {}
-                elif all_ts:
-                    batch_ltp = self._groww.get_ltp(
-                        segment=self._groww.SEGMENT_DERIVATIVE,
-                        exchange_trading_symbols=tuple(all_ts),
-                    ) or {}
-            except Exception as e:
-                logger.warning(f"Batch LTP failed, falling back to quotes: {e}")
+            BATCH_SIZE = 50
+            if all_ts_keys:
+                for i in range(0, len(all_ts_keys), BATCH_SIZE):
+                    chunk = all_ts_keys[i:i + BATCH_SIZE]
+                    try:
+                        if len(chunk) == 1:
+                            result = self._groww.get_ltp(
+                                segment=self._groww.SEGMENT_FNO,
+                                exchange_trading_symbols=chunk[0],
+                            ) or {}
+                        else:
+                            result = self._groww.get_ltp(
+                                segment=self._groww.SEGMENT_FNO,
+                                exchange_trading_symbols=tuple(chunk),
+                            ) or {}
+                        batch_ltp.update(result)
+                    except Exception as e:
+                        logger.warning(f"Batch LTP chunk failed: {e}")
+                logger.info(f"Batch LTP: {len(batch_ltp)} prices fetched")
 
-            # ── Build chain per strike ────────────────────
+            # ── Fetch OI via individual quotes ─────────────
+            # Only for the ~30 selected strikes — manageable
             from core.options_engine import solve_iv
 
-            for strike in strikes:
+            chain = []
+            for strike in selected_strikes:
                 row = {
-                    "strike": float(strike),
-                    "expiry": nearest_expiry,
-                    "call_ltp": 0.0, "call_oi": 0, "call_volume": 0, "call_iv": 0.0,
-                    "put_ltp": 0.0,  "put_oi": 0,  "put_volume": 0,  "put_iv": 0.0,
+                    "strike":      float(strike),
+                    "expiry":      nearest_expiry,
+                    "call_ltp":    0.0, "call_oi": 0, "call_volume": 0, "call_iv": 0.0,
+                    "put_ltp":     0.0, "put_oi":  0, "put_volume":  0, "put_iv":  0.0,
                 }
 
-                # CE data
+                # ── CE ─────────────────────────────────────
                 ce_ts = ce_symbols.get(strike)
                 if ce_ts:
                     ce_key = f"NSE_{ce_ts}"
-                    # LTP from batch
                     if ce_key in batch_ltp:
                         row["call_ltp"] = float(batch_ltp[ce_key])
 
-                    # Full quote for OI + IV (individual call)
                     try:
                         ce_quote = self._groww.get_quote(
                             exchange="NSE",
-                            segment=self._groww.SEGMENT_DERIVATIVE,
+                            segment=self._groww.SEGMENT_FNO,
                             trading_symbol=ce_ts,
                         )
                         if ce_quote:
                             if not row["call_ltp"]:
-                                row["call_ltp"] = float(ce_quote.get("last_price", 0) or 0)
-                            row["call_oi"]     = int(ce_quote.get("open_interest", 0) or 0)
-                            row["call_volume"] = int(ce_quote.get("volume", 0) or 0)
-                            row["call_iv"]     = float(ce_quote.get("implied_volatility", 0) or 0)
-                    except Exception:
-                        pass
+                                row["call_ltp"] = float(
+                                    ce_quote.get("last_price", 0) or 0
+                                )
+                            row["call_oi"]     = int(
+                                ce_quote.get("open_interest", 0) or 0
+                            )
+                            row["call_volume"] = int(
+                                ce_quote.get("volume", 0) or 0
+                            )
+                            row["call_iv"]     = float(
+                                ce_quote.get("implied_volatility", 0) or 0
+                            )
+                    except Exception as e:
+                        logger.debug(f"CE quote {ce_ts}: {e}")
 
-                    # ── IV solver fallback ─────────────────
-                    if row["call_iv"] == 0 and row["call_ltp"] > 0 and spot_price:
+                    # IV solver fallback
+                    if (
+                        row["call_iv"] == 0
+                        and row["call_ltp"] > 0
+                        and spot_price
+                    ):
                         row["call_iv"] = solve_iv(
                             market_price=row["call_ltp"],
                             spot=spot_price, strike=float(strike),
                             dte=dte, option_type="CE",
                         )
 
-                # PE data
+                # ── PE ─────────────────────────────────────
                 pe_ts = pe_symbols.get(strike)
                 if pe_ts:
                     pe_key = f"NSE_{pe_ts}"
@@ -375,20 +407,32 @@ class GrowwClient:
                     try:
                         pe_quote = self._groww.get_quote(
                             exchange="NSE",
-                            segment=self._groww.SEGMENT_DERIVATIVE,
+                            segment=self._groww.SEGMENT_FNO,
                             trading_symbol=pe_ts,
                         )
                         if pe_quote:
                             if not row["put_ltp"]:
-                                row["put_ltp"] = float(pe_quote.get("last_price", 0) or 0)
-                            row["put_oi"]     = int(pe_quote.get("open_interest", 0) or 0)
-                            row["put_volume"] = int(pe_quote.get("volume", 0) or 0)
-                            row["put_iv"]     = float(pe_quote.get("implied_volatility", 0) or 0)
-                    except Exception:
-                        pass
+                                row["put_ltp"] = float(
+                                    pe_quote.get("last_price", 0) or 0
+                                )
+                            row["put_oi"]     = int(
+                                pe_quote.get("open_interest", 0) or 0
+                            )
+                            row["put_volume"] = int(
+                                pe_quote.get("volume", 0) or 0
+                            )
+                            row["put_iv"]     = float(
+                                pe_quote.get("implied_volatility", 0) or 0
+                            )
+                    except Exception as e:
+                        logger.debug(f"PE quote {pe_ts}: {e}")
 
-                    # ── IV solver fallback ─────────────────
-                    if row["put_iv"] == 0 and row["put_ltp"] > 0 and spot_price:
+                    # IV solver fallback
+                    if (
+                        row["put_iv"] == 0
+                        and row["put_ltp"] > 0
+                        and spot_price
+                    ):
                         row["put_iv"] = solve_iv(
                             market_price=row["put_ltp"],
                             spot=spot_price, strike=float(strike),
@@ -446,7 +490,7 @@ class GrowwClient:
             result = self._groww.get_historical_candle_data(
                 trading_symbol=ts,
                 exchange=self._groww.EXCHANGE_NSE,
-                segment=self._groww.SEGMENT_DERIVATIVE,
+                segment=self._groww.SEGMENT_FNO,
                 start_time=start_dt.strftime("%Y-%m-%d %H:%M:%S"),
                 end_time=end_dt.strftime("%Y-%m-%d %H:%M:%S"),
                 interval_in_minutes=interval_minutes,
@@ -550,7 +594,7 @@ class GrowwClient:
             order_type        = sdk_order_type,
             product           = self._groww.PRODUCT_NRML,
             quantity          = quantity,
-            segment           = self._groww.SEGMENT_DERIVATIVE,
+            segment           = self._groww.SEGMENT_FNO,
             trading_symbol    = trading_symbol,
             transaction_type  = sdk_txn_type,
             price             = price if order_type.upper() == "LIMIT" else 0.0,
@@ -587,7 +631,7 @@ class GrowwClient:
         try:
             df = self.get_instruments_df()
             nfo_count = len(df[
-                (df["exchange"] == "NSE") & (df["segment"] == "NFO")
+                (df["exchange"] == "NSE") & (df["segment"] == "FNO")
             ])
             return {
                 "status":           "ok",
