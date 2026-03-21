@@ -1,0 +1,29 @@
+# OPTIONEX Dependencies
+# Install: pip install -r requirements.txt
+
+# Core
+streamlit>=1.30.0
+pandas>=2.0.0
+numpy>=1.24.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# LLM Providers
+openai>=1.0.0
+anthropic>=0.25.0
+
+# Groww SDK
+growwapi>=0.1.0
+pyotp>=2.9.0
+
+# Technical Analysis
+ta>=0.11.0
+
+# News
+tavily-python>=0.3.0
+
+# Notifications
+requests>=2.31.0
+
+# Greeks computation (stdlib math.erf is sufficient, but scipy is optional)
+# scipy>=1.11.0  # optional — using math.erf instead
