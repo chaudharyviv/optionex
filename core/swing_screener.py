@@ -61,6 +61,16 @@ class SwingScreener:
     Uses lightweight data already available from GrowwClient + TechnicalEngine.
     All checks are deterministic — no LLM.
 
+    Two-layer filter:
+      Layer A (mandatory gate — ALL must pass):
+        • price above EMA 200
+        • EMA 20 above EMA 50
+        • ADX > 25
+
+      Layer B (timing events — must hit ≥ MIN_SOFT_HITS):
+        near_52w_high_252, volume_surge_1_5x, rsi_crossed_above_50,
+        supertrend_flip, bb_breakout, macd_bullish_cross
+
     Typical workflow:
         screener = SwingScreener(groww_client, tech_engine)
         shortlist = screener.screen(universe=NIFTY_500_SAMPLE)
@@ -69,7 +79,7 @@ class SwingScreener:
             result = swing_orchestrator.generate(symbol)
     """
 
-    MIN_SOFT_HITS = 2   # symbol must pass at least 2 soft screens
+    MIN_SOFT_HITS = 3   # symbol must pass at least 3 Layer B timing screens
 
     def __init__(self, groww_client, tech_engine):
         self._groww = groww_client
@@ -139,7 +149,7 @@ class SwingScreener:
         try:
             from datetime import datetime, timedelta
             end_dt   = datetime.today()
-            start_dt = end_dt - timedelta(days=120)
+            start_dt = end_dt - timedelta(days=400)   # ~252 trading days + buffer
 
             raw = self._groww._groww.get_historical_candle_data(
                 trading_symbol      = symbol,
@@ -183,12 +193,33 @@ class SwingScreener:
             )
             return result
 
-        # ── Soft Screens ──────────────────────────────────────
+        # ── Layer A Gate (mandatory — ALL must pass) ──────────
+        layer_a_fails = []
+
+        # A1. Price above EMA 200 (long-term trend anchor)
+        if tech.ema_200 and tech.latest_price < tech.ema_200:
+            layer_a_fails.append(f"below_ema200 (price={tech.latest_price:.2f} ema200={tech.ema_200:.2f})")
+
+        # A2. EMA 20 above EMA 50 (short-term trend bullish)
+        if not (tech.ema_trend and "bullish" in tech.ema_trend.lower()):
+            layer_a_fails.append("ema20_not_above_ema50")
+
+        # A3. ADX > 25 (trending, not ranging)
+        if not (tech.adx_14 and tech.adx_14 > 25):
+            layer_a_fails.append(f"adx_below_25 (adx={tech.adx_14})")
+
+        if layer_a_fails:
+            result.fail_reasons.extend(layer_a_fails)
+            return result
+
+        # ── Layer B Soft Screens (timing events — need ≥ MIN_SOFT_HITS) ──
         soft_hits = []
 
-        # 1. Near 52-week high (within 5%)
-        if tech.week_high and tech.latest_price >= tech.week_high * 0.95:
-            soft_hits.append("near_52w_high")
+        # 1. Near 52-week high — within 5% of actual 252-candle max
+        candle_highs = [c["high"] for c in candles if c.get("high")]
+        high_252 = max(candle_highs[-252:]) if len(candle_highs) >= 252 else max(candle_highs)
+        if tech.latest_price >= high_252 * 0.95:
+            soft_hits.append("near_52w_high_252")
 
         # 2. Volume surge (today > 1.5× 20-day avg)
         if (
@@ -197,27 +228,28 @@ class SwingScreener:
         ):
             soft_hits.append("volume_surge_1_5x")
 
-        # 3. EMA alignment (20 > 50 = short-term trend bullish)
-        if tech.ema_trend and "bullish" in tech.ema_trend.lower():
-            soft_hits.append("ema20_above_ema50")
+        # 3. RSI crossed above 50 (from below — recent momentum trigger)
+        try:
+            import pandas as pd
+            closes = pd.Series([c["close"] for c in candles], dtype=float)
+            delta  = closes.diff()
+            gain   = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+            loss   = (-delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+            rsi_s  = 100 - (100 / (1 + gain / loss))
+            if len(rsi_s) >= 2 and rsi_s.iloc[-2] < 50 <= rsi_s.iloc[-1]:
+                soft_hits.append("rsi_crossed_above_50")
+        except Exception:
+            pass
 
-        # 4. RSI in momentum sweet spot (50-70)
-        if tech.rsi_14 and 50 <= tech.rsi_14 <= 70:
-            soft_hits.append("rsi_between_50_70")
+        # 4. Supertrend flipped bullish on latest candle
+        if tech.supertrend_flip is True:
+            soft_hits.append("supertrend_flip")
 
-        # 5. Supertrend bullish
-        if tech.supertrend_dir == "bullish":
-            soft_hits.append("supertrend_bullish")
-
-        # 6. BB breakout (squeeze released)
+        # 5. BB breakout (squeeze released, price above upper band)
         if tech.bb_squeeze is False and tech.bb_position == "above":
             soft_hits.append("bb_breakout")
 
-        # 7. ADX trending (> 25)
-        if tech.adx_14 and tech.adx_14 > 25:
-            soft_hits.append("adx_above_25")
-
-        # 8. MACD bullish cross
+        # 6. MACD bullish cross
         if tech.macd_cross and "bullish" in tech.macd_cross.lower():
             soft_hits.append("macd_bullish_cross")
 
