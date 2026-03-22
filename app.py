@@ -6,7 +6,7 @@ Phase 1+2: Nifty & BankNifty, defined-risk strategies only.
 
 import streamlit as st
 import logging
-from config import TRADING_MODE, ACTIVE_LLM, validate_config
+from config import TRADING_MODE, ACTIVE_LLM, validate_config, NSE_LOT_CONFIG
 from core.db import init as db_init, health_check
 
 st.set_page_config(

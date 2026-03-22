@@ -231,19 +231,11 @@ def render_sidebar():
         )
         return selection
 
-"""
-SWINGTRADE — Swing UI Helpers
-Reusable Streamlit components for the Swing tab.
-Mirrors ui_helpers.py pattern — same function signatures where possible.
-Import alongside existing ui_helpers in app.py.
-"""
 
-import streamlit as st
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
-IST = ZoneInfo("Asia/Kolkata")
-
+# ─────────────────────────────────────────────────────────────────
+# SWING UI HELPERS
+# ─────────────────────────────────────────────────────────────────
 
 def render_swing_signal_badge(action: str, confidence: int, quality: str):
     """Mirrors render_signal_badge() for swing actions."""
