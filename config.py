@@ -426,7 +426,7 @@ def validate_config() -> list[str]:
 
 # Universe and screener
 SWING_UNIVERSE              = os.getenv("SWING_UNIVERSE", "nifty_500")
-SWING_MAX_SCREENED          = int(os.getenv("SWING_MAX_SCREENED", 20))     # max shortlist before LLM
+SWING_MAX_SCREENED          = int(os.getenv("SWING_MAX_SCREENED", 15))     # max shortlist before LLM
 SWING_MAX_OPEN_TRADES       = int(os.getenv("SWING_MAX_OPEN_TRADES", 6))
 
 # Capital and risk
@@ -453,15 +453,21 @@ SWING_HARD_FILTERS = {
     "min_avg_daily_volume":   500_000,   # 5 lakh shares average daily
 }
 
-# Soft screening criteria — stock must pass ≥ 2
-SWING_SOFT_SCREENS = [
-    "near_52w_high",          # within 5% of 52-week high
-    "volume_surge_1_5x",      # volume > 1.5× 20-day average
+# Layer A gate — ALL must pass (mandatory trend conditions)
+SWING_LAYER_A_GATE = [
+    "above_ema200",           # price above 200 EMA (long-term trend anchor)
     "ema20_above_ema50",      # short-term EMA above medium
-    "rsi_between_50_70",      # momentum sweet spot
-    "supertrend_bullish",     # supertrend confirming
-    "bb_breakout",            # Bollinger Band squeeze breakout
     "adx_above_25",           # trending (not ranging)
+]
+
+# Layer B soft screens — timing events, stock must pass ≥ MIN_SOFT_HITS (3)
+SWING_SOFT_SCREENS = [
+    "near_52w_high_252",      # within 5% of actual 252-candle high
+    "volume_surge_1_5x",      # volume > 1.5× 20-day average
+    "rsi_crossed_above_50",   # RSI crossed from below 50 to above (momentum trigger)
+    "supertrend_flip",        # supertrend flipped bullish on latest candle
+    "bb_breakout",            # Bollinger Band squeeze breakout
+    "macd_bullish_cross",     # MACD bullish crossover
 ]
 
 # Confidence caps (mirrors options caps pattern)
