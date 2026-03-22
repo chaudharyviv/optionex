@@ -356,15 +356,25 @@ class SwingDataBundleAssembler:
 
         # ── 5. Nifty 50 trend context ─────────────────────────
         try:
-            nifty_candles_raw = self._groww._groww.get_historical_candle_data(
-                trading_symbol    = "NIFTY 50",
-                exchange          = self._groww._groww.EXCHANGE_NSE,
-                segment           = self._groww._groww.SEGMENT_CASH,
-                start_time        = (datetime.today() - __import__('datetime').timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S"),
-                end_time          = datetime.today().strftime("%Y-%m-%d %H:%M:%S"),
-                interval_in_minutes = 1440,
-            )
-            nifty_candles = self._parse_candles(nifty_candles_raw)
+            from datetime import timedelta
+            _start = (datetime.today() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+            _end   = datetime.today().strftime("%Y-%m-%d %H:%M:%S")
+            nifty_candles_raw = None
+            for _sym in ("NIFTY", "NIFTY 50", "Nifty 50"):
+                try:
+                    nifty_candles_raw = self._groww._groww.get_historical_candle_data(
+                        trading_symbol      = _sym,
+                        exchange            = self._groww._groww.EXCHANGE_NSE,
+                        segment             = self._groww._groww.SEGMENT_CASH,
+                        start_time          = _start,
+                        end_time            = _end,
+                        interval_in_minutes = 1440,
+                    )
+                    if nifty_candles_raw:
+                        break
+                except Exception:
+                    continue
+            nifty_candles = self._parse_candles(nifty_candles_raw) if nifty_candles_raw else []
             if nifty_candles and len(nifty_candles) >= 20:
                 nifty_tech = self._tech.compute(nifty_candles, "NIFTY", "1day")
                 bundle.nifty_trend      = nifty_tech.ema_trend or "neutral"
