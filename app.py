@@ -488,6 +488,328 @@ def render_trade_log():
 
 
 # ─────────────────────────────────────────────────────────────────
+# SWING TRADING
+# ─────────────────────────────────────────────────────────────────
+
+def render_swing_trading():
+    from core.ui_helpers import (
+        render_swing_signal_badge,
+        render_swing_analysis,
+        render_swing_price_levels,
+        render_swing_position,
+        render_swing_risk,
+        render_swing_results_table,
+        render_swing_order_button,
+    )
+    from core.db import get_connection
+
+    st.title("📈 Swing Trading")
+    st.caption(
+        f"Cash-segment swing signals via 3-agent pipeline  |  "
+        f"Provider: {ACTIVE_LLM['provider'].upper()}  |  "
+        f"Model: {ACTIVE_LLM['model']}"
+    )
+
+    tab1, tab2, tab3 = st.tabs(["Screener & Batch", "Single Stock", "Swing Log"])
+
+    # ── Tab 1: Screener + Batch Analysis ───────────────────────────
+    with tab1:
+        st.subheader("Universe Screener")
+        st.caption(
+            "Step 1: Run the deterministic screener to shortlist candidates. "
+            "Step 2: Run the 3-agent LLM pipeline on the shortlist."
+        )
+
+        run_screener = st.button("🔍 Run Screener", type="primary")
+
+        if run_screener:
+            st.divider()
+            st.subheader("Screener Status")
+            screen_progress = st.progress(0)
+            screen_status   = st.empty()
+
+            try:
+                screen_status.info("⏳ Initialising token...")
+
+                from generate_token import generate_totp_token, save_token_to_env
+                token = generate_totp_token()
+                save_token_to_env(token)
+                os.environ["GROWW_ACCESS_TOKEN"] = token
+
+                from core.groww_client import GrowwClient
+                from core.technical_engine import TechnicalEngine
+                from core.swing_screener import SwingScreener, NIFTY_500_SAMPLE
+
+                groww    = GrowwClient(access_token=token)
+                tech     = TechnicalEngine()
+                screener = SwingScreener(groww, tech)
+
+                screen_progress.progress(10)
+                screen_status.info(f"📡 Screening {len(NIFTY_500_SAMPLE)} symbols...")
+
+                with st.spinner("Running screener (no LLM — fast)..."):
+                    screen_results = screener.screen_with_details(
+                        universe=NIFTY_500_SAMPLE,
+                        exchange="NSE",
+                    )
+
+                shortlist = [r.symbol for r in screen_results if r.passed]
+
+                screen_progress.progress(100)
+                screen_status.success(
+                    f"✅ Screener complete — "
+                    f"{len(shortlist)}/{len(NIFTY_500_SAMPLE)} passed filters"
+                )
+
+                if not shortlist:
+                    st.warning(
+                        "No symbols passed the hard filters. "
+                        "Market may be in a risk-off regime."
+                    )
+                else:
+                    st.info(f"Shortlist ({len(shortlist)}): {', '.join(shortlist)}")
+                    st.session_state["swing_shortlist"] = shortlist
+
+            except Exception as e:
+                screen_progress.progress(100)
+                screen_status.error(f"Screener failed: {e}")
+                st.error(f"Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        # ── Batch Analysis ──────────────────────────────────────────
+        shortlist_ready = bool(st.session_state.get("swing_shortlist"))
+        run_batch = st.button(
+            "▶ Run Batch Analysis",
+            type="primary",
+            disabled=not shortlist_ready,
+        )
+        if not shortlist_ready:
+            st.caption("Run the screener first to enable batch analysis.")
+
+        if run_batch and shortlist_ready:
+            st.divider()
+            st.subheader("Batch Pipeline Status")
+            batch_progress = st.progress(0)
+            batch_status   = st.empty()
+
+            try:
+                batch_status.info("⏳ Initialising pipeline...")
+                shortlist = st.session_state["swing_shortlist"]
+
+                from generate_token import generate_totp_token, save_token_to_env
+                token = generate_totp_token()
+                save_token_to_env(token)
+                os.environ["GROWW_ACCESS_TOKEN"] = token
+
+                from core.groww_client import GrowwClient
+                from core.technical_engine import TechnicalEngine
+                from core.news_client import NewsClient
+                from core.orchestrator import SwingSignalOrchestrator
+
+                groww = GrowwClient(access_token=token)
+                tech  = TechnicalEngine()
+                news  = NewsClient()
+                orch  = SwingSignalOrchestrator(groww, tech, news)
+
+                batch_progress.progress(10)
+                batch_status.info(
+                    f"🔬 Running 3-agent pipeline on {len(shortlist)} symbols..."
+                )
+
+                with st.spinner(
+                    f"Analysing {len(shortlist)} symbols "
+                    f"(~{len(shortlist) * 15}s estimated)..."
+                ):
+                    results = orch.generate_batch(symbols=shortlist, exchange="NSE")
+
+                approved = [r for r in results if r.approved and r.final_action == "BUY"]
+
+                batch_progress.progress(100)
+                batch_status.success(
+                    f"✅ Batch complete — "
+                    f"{len(approved)}/{len(results)} approved BUY signals"
+                )
+
+                st.divider()
+                st.subheader("Batch Results")
+                render_swing_results_table(results)
+
+                if approved:
+                    st.divider()
+                    st.subheader(f"Approved BUY Signals ({len(approved)})")
+                    for result in approved:
+                        rr_str = (
+                            f"R:R {result.risk_reward:.1f}:1"
+                            if result.risk_reward else ""
+                        )
+                        with st.expander(
+                            f"{result.symbol}  |  {result.setup_type}  |  "
+                            f"{result.final_confidence}%  |  {rr_str}".strip(" |"),
+                            expanded=False,
+                        ):
+                            render_swing_signal_badge(
+                                result.final_action,
+                                result.final_confidence,
+                                result.signal_quality,
+                            )
+                            render_swing_analysis(result.analysis)
+                            st.divider()
+                            render_swing_price_levels(result)
+                            render_swing_position(result.position_sizing)
+                            render_swing_risk(result.risk, result.signal)
+                            if TRADING_MODE == "production":
+                                render_swing_order_button(result, groww)
+                else:
+                    st.info(
+                        "No approved BUY signals in this batch. "
+                        "WATCH signals are shown in the table above."
+                    )
+
+            except Exception as e:
+                batch_progress.progress(100)
+                batch_status.error(f"Batch pipeline failed: {e}")
+                st.error(f"Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+    # ── Tab 2: Single Stock Analysis ───────────────────────────────
+    with tab2:
+        st.subheader("Single Stock Analysis")
+        st.caption("Run the full 3-agent swing pipeline on one cash-segment symbol.")
+
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            symbol_input = st.text_input(
+                "Symbol",
+                value="RELIANCE",
+                placeholder="e.g. RELIANCE, TATAMOTORS, INFY",
+                help="NSE/BSE cash segment symbol",
+            ).strip().upper()
+        with col2:
+            exchange_input = st.selectbox("Exchange", options=["NSE", "BSE"], index=0)
+        with col3:
+            st.write("")
+            st.write("")
+            analyse_button = st.button("▶ Analyse", type="primary", use_container_width=True)
+
+        if analyse_button:
+            if not symbol_input:
+                st.error("Please enter a symbol.")
+            else:
+                st.divider()
+                st.subheader(f"Analysis: {symbol_input}")
+                single_progress = st.progress(0)
+                single_status   = st.empty()
+
+                try:
+                    single_status.info("⏳ Initialising...")
+
+                    from generate_token import generate_totp_token, save_token_to_env
+                    token = generate_totp_token()
+                    save_token_to_env(token)
+                    os.environ["GROWW_ACCESS_TOKEN"] = token
+
+                    from core.groww_client import GrowwClient
+                    from core.technical_engine import TechnicalEngine
+                    from core.news_client import NewsClient
+                    from core.orchestrator import SwingSignalOrchestrator
+
+                    groww = GrowwClient(access_token=token)
+                    tech  = TechnicalEngine()
+                    news  = NewsClient()
+                    orch  = SwingSignalOrchestrator(groww, tech, news)
+
+                    single_progress.progress(20)
+                    single_status.info(f"🔬 Running 3-agent pipeline for {symbol_input}...")
+
+                    with st.spinner(f"Analysing {symbol_input} on {exchange_input}..."):
+                        result = orch.generate(symbol=symbol_input, exchange=exchange_input)
+
+                    single_progress.progress(100)
+                    single_status.success("✅ Analysis complete")
+
+                    st.divider()
+                    render_swing_signal_badge(
+                        result.final_action,
+                        result.final_confidence,
+                        result.signal_quality,
+                    )
+
+                    if result.block_reason:
+                        st.warning(f"Block reason: {result.block_reason}")
+
+                    if result.sanity_warnings:
+                        st.divider()
+                        st.subheader("⚠ Sanity Warnings")
+                        for w in result.sanity_warnings:
+                            st.warning(w)
+
+                    st.divider()
+                    left, right = st.columns([1, 1])
+                    with left:
+                        render_swing_analysis(result.analysis)
+                    with right:
+                        render_swing_price_levels(result)
+                        render_swing_position(result.position_sizing)
+                        render_swing_risk(result.risk, result.signal)
+
+                    if TRADING_MODE == "production":
+                        render_swing_order_button(result, groww)
+
+                except Exception as e:
+                    single_progress.progress(100)
+                    single_status.error(f"Pipeline failed: {e}")
+                    st.error(f"Error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+    # ── Tab 3: Swing Log ────────────────────────────────────────────
+    with tab3:
+        st.subheader("Swing Trade Log")
+        sub1, sub2 = st.tabs(["Signals", "Trades"])
+
+        with sub1:
+            try:
+                conn = get_connection()
+                df = pd.read_sql_query("""
+                    SELECT timestamp, symbol, exchange, setup_type, direction,
+                           signal_quality, action, confidence, approved,
+                           entry_price, stop_loss, target_1, target_2,
+                           risk_reward, hold_days, shares, actual_risk_inr,
+                           actual_risk_pct, sector, market_regime,
+                           block_reason, primary_reason
+                    FROM swing_signals_log
+                    ORDER BY timestamp DESC LIMIT 100
+                """, conn)
+                conn.close()
+                if df.empty:
+                    st.info("No swing signals yet. Run the screener or single-stock analysis first.")
+                else:
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    st.caption(f"Showing latest {len(df)} signals")
+            except Exception as e:
+                st.error(f"Failed to load swing signals: {e}")
+
+        with sub2:
+            try:
+                conn = get_connection()
+                df = pd.read_sql_query("""
+                    SELECT * FROM swing_trades_log
+                    ORDER BY entry_time DESC LIMIT 100
+                """, conn)
+                conn.close()
+                if df.empty:
+                    st.info("No swing trades logged yet.")
+                else:
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    total_pnl = df["pnl_total"].sum() if "pnl_total" in df.columns else 0
+                    st.metric("Total Swing P&L", f"₹{total_pnl:,.0f}")
+            except Exception:
+                st.info("No swing trades logged yet.")
+
+
+# ─────────────────────────────────────────────────────────────────
 # SETTINGS
 # ─────────────────────────────────────────────────────────────────
 
@@ -659,6 +981,8 @@ def main():
         render_signal_engine()
     elif selection == "Trade Log":
         render_trade_log()
+    elif selection == "Swing Trading":
+        render_swing_trading()
     elif selection == "Settings":
         render_settings()
 
