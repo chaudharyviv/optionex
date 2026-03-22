@@ -271,31 +271,13 @@ class OptionsSignalOrchestrator:
 
         return result
 
-"""
-SWINGTRADE — Swing Signal Orchestrator
-Wires together the full 3-agent swing pipeline.
-Single entry point for swing signal generation.
 
-Mirrors OptionsSignalOrchestrator pattern exactly:
-  - Same stage numbering and logging
-  - Same "never raises" contract — always returns SwingSignalResult
-  - Same default-to-AVOID on any failure
-  - Same confidence threshold check between Agent 2 and Agent 3
 
-Flow:
-  SwingDataBundle → Agent1 (Analyst) → SwingSanityChecker →
-  Agent2 (Setup) → Agent3 (Risk) → SwingSignalResult
-"""
+# ─────────────────────────────────────────────────────────────────
+# SWING ORCHESTRATOR
+# ─────────────────────────────────────────────────────────────────
 
-import json
-import logging
-from datetime import datetime
-from dataclasses import dataclass, field
-from typing import Optional
-
-# Add the model imports directly from llm_client:
 from core.llm_client import (
-    LLMClient,
     SwingMarketAnalysis,
     SwingSetupDecision,
     SwingRiskParameters,
@@ -304,8 +286,7 @@ from core.agents.swing_analyst_agent import SwingAnalystAgent, SwingSanityChecke
 from core.agents.swing_setup_agent import SwingSetupAgent
 from core.agents.swing_risk_agent import SwingRiskAgent
 from core.swing_data_bundle import SwingDataBundleAssembler
-from config import TRADING_MODE, ACTIVE_LLM, SWING_MIN_CONFIDENCE
-logger = logging.getLogger(__name__)
+from config import SWING_MIN_CONFIDENCE
 
 
 @dataclass
