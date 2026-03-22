@@ -230,3 +230,237 @@ def render_sidebar():
             f"{datetime.now(IST).strftime('%d %b %Y')}"
         )
         return selection
+
+"""
+SWINGTRADE — Swing UI Helpers
+Reusable Streamlit components for the Swing tab.
+Mirrors ui_helpers.py pattern — same function signatures where possible.
+Import alongside existing ui_helpers in app.py.
+"""
+
+import streamlit as st
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def render_swing_signal_badge(action: str, confidence: int, quality: str):
+    """Mirrors render_signal_badge() for swing actions."""
+    if action == "BUY":
+        st.success(f"▲ BUY  |  {confidence}% confidence  |  Grade {quality}")
+    elif action == "WATCH":
+        st.info(f"◉ WATCH  |  {confidence}% confidence  |  Grade {quality}")
+    elif action == "AVOID":
+        st.warning(f"✕ AVOID  |  {confidence}%")
+    else:
+        st.info(f"● {action}  |  {confidence}%")
+
+
+def render_swing_price_levels(result):
+    """Render entry, SL, targets in a compact metric row."""
+    if not result.entry_price:
+        st.info("No price levels — AVOID/WATCH signal")
+        return
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Entry", f"₹{result.entry_price:,.2f}")
+    with col2:
+        sl_delta = result.stop_loss - result.entry_price
+        st.metric("Stop Loss", f"₹{result.stop_loss:,.2f}", delta=f"{sl_delta:+.2f}", delta_color="inverse")
+    with col3:
+        t1_delta = result.target_1 - result.entry_price
+        st.metric("Target 1", f"₹{result.target_1:,.2f}", delta=f"{t1_delta:+.2f}")
+    with col4:
+        t2_delta = result.target_2 - result.entry_price
+        st.metric("Target 2", f"₹{result.target_2:,.2f}", delta=f"{t2_delta:+.2f}")
+    with col5:
+        st.metric("R:R", f"{result.risk_reward:.1f}:1")
+
+    if result.hold_days:
+        st.caption(f"Expected hold: {result.hold_days} trading days")
+
+
+def render_swing_position(position_sizing: dict):
+    """Render position sizing details."""
+    if not position_sizing:
+        st.info("No position sizing — signal not approved")
+        return
+
+    st.markdown("#### Position sizing")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Shares", f"{position_sizing['shares']:,}")
+    with col2:
+        st.metric("Position Value", f"₹{position_sizing['position_value']:,.0f}")
+    with col3:
+        st.metric("Capital at Risk", f"₹{position_sizing['actual_risk_inr']:,.0f}")
+    with col4:
+        st.metric("Risk %", f"{position_sizing['actual_risk_pct']:.2f}%")
+
+    if position_sizing.get("b_grade_reduced"):
+        st.caption("⚠ B-grade signal — position size reduced")
+
+
+def render_swing_analysis(analysis):
+    """Render Agent 1 output — trend, setup, momentum."""
+    if not analysis:
+        st.info("No analysis available")
+        return
+
+    st.markdown("#### Market analysis")
+    col1, col2, col3 = st.columns(3)
+
+    regime_icons = {
+        "trending_bull": "🟢", "trending_bear": "🔴",
+        "ranging": "🟡", "volatile": "🟠",
+    }
+    with col1:
+        st.markdown("**Market regime**")
+        icon = regime_icons.get(analysis.market_regime, "⚪")
+        st.markdown(f"{icon} {analysis.market_regime}")
+        st.caption(f"Nifty: {analysis.nifty_context}")
+
+    with col2:
+        st.markdown("**Trend**")
+        trend_icon = "▲" if analysis.trend_direction == "bullish" else "▼" if analysis.trend_direction == "bearish" else "◆"
+        st.markdown(f"{trend_icon} {analysis.trend_direction} ({analysis.trend_strength})")
+        st.caption(f"EMA: {analysis.ema_alignment} | EMA200: {'above' if analysis.above_ema200 else 'below'}")
+
+    with col3:
+        st.markdown("**Setup**")
+        quality_icon = {"A": "⭐⭐⭐", "B": "⭐⭐", "C": "⭐"}.get(analysis.setup_quality, "⭐")
+        st.markdown(f"{analysis.setup_type} {quality_icon}")
+        st.caption(f"Key level: ₹{analysis.key_level:,.2f}")
+
+    st.divider()
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        st.markdown("**Volume**")
+        vol_icon = {"confirmed": "✅", "weak": "⚠", "absent": "❌", "divergent": "⚡"}.get(analysis.volume_verdict, "❓")
+        st.markdown(f"{vol_icon} {analysis.volume_verdict}")
+
+    with col5:
+        st.markdown("**Momentum**")
+        st.markdown(f"{analysis.momentum_verdict}")
+        st.caption(analysis.rsi_assessment[:60] + "..." if len(analysis.rsi_assessment) > 60 else analysis.rsi_assessment)
+
+    with col6:
+        st.markdown("**OI / Delivery**")
+        st.markdown(f"{analysis.oi_verdict}")
+
+    if analysis.primary_thesis:
+        st.divider()
+        st.markdown("**Thesis**")
+        st.info(analysis.primary_thesis)
+
+    if analysis.risk_factors:
+        st.markdown("**Risk factors**")
+        for rf in analysis.risk_factors:
+            st.caption(f"• {rf}")
+
+
+def render_swing_risk(risk, signal):
+    """Render Agent 3 output — trade management."""
+    if not risk:
+        return
+
+    st.markdown("#### Trade management")
+    col1, col2 = st.columns(2)
+    with col1:
+        if risk.exit_strategy:
+            st.caption(f"Exit plan: {risk.exit_strategy}")
+        if risk.adjustment_plan:
+            st.caption(f"Adjustment: {risk.adjustment_plan}")
+    with col2:
+        if risk.execution_notes:
+            st.caption(f"Execution: {risk.execution_notes}")
+        if risk.sector_risk:
+            st.caption(f"Sector risk: {risk.sector_risk}")
+        if risk.event_risk and risk.event_risk != "None":
+            st.caption(f"⚠ Event risk: {risk.event_risk}")
+
+
+def render_swing_results_table(results: list):
+    """
+    Render batch results as a compact table with colour coding.
+    Used on the Swing dashboard for screener output.
+    """
+    import pandas as pd
+
+    if not results:
+        st.info("No swing signals generated")
+        return
+
+    rows = []
+    for r in results:
+        rows.append({
+            "Symbol":     r.symbol,
+            "Action":     r.final_action,
+            "Setup":      r.setup_type,
+            "Quality":    r.signal_quality,
+            "Conf %":     r.final_confidence,
+            "Entry ₹":    f"{r.entry_price:,.2f}" if r.entry_price else "—",
+            "SL ₹":       f"{r.stop_loss:,.2f}"  if r.stop_loss  else "—",
+            "T1 ₹":       f"{r.target_1:,.2f}"   if r.target_1   else "—",
+            "R:R":        f"{r.risk_reward:.1f}"  if r.risk_reward else "—",
+            "Shares":     r.position_sizing["shares"] if r.position_sizing else "—",
+            "Risk ₹":     f"{r.position_sizing['actual_risk_inr']:,.0f}" if r.position_sizing else "—",
+            "Sector":     r.sector or "—",
+            "Approved":   "✅" if r.approved else "✕",
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_swing_order_button(result, groww_client):
+    """
+    Render a manual order placement button.
+    Only enabled when signal is approved BUY.
+    Order placement requires explicit button click — never automatic.
+    """
+    if not result.approved or result.final_action != "BUY":
+        return
+
+    st.divider()
+    st.markdown("#### Place order (manual confirmation required)")
+    st.warning(
+        f"This will place a **BUY** order for **{result.position_sizing['shares']} shares** "
+        f"of **{result.symbol}** at market price (~₹{result.entry_price:,.2f}). "
+        f"Capital at risk: ₹{result.position_sizing['actual_risk_inr']:,.0f}"
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button(
+            f"Confirm BUY {result.symbol} — {result.position_sizing['shares']} shares",
+            type="primary",
+            key=f"buy_{result.symbol}_{result.timestamp}",
+        ):
+            try:
+                from config import TRADING_MODE
+                if TRADING_MODE != "production":
+                    st.error(
+                        f"Order placement blocked — mode is '{TRADING_MODE}'. "
+                        f"Set TRADING_MODE=production to enable live orders."
+                    )
+                else:
+                    # Cash order placement — uses GrowwClient directly
+                    order_result = groww_client._groww.place_order(
+                        validity          = groww_client._groww.VALIDITY_DAY,
+                        exchange          = groww_client._groww.EXCHANGE_NSE,
+                        order_type        = groww_client._groww.ORDER_TYPE_MARKET,
+                        product           = groww_client._groww.PRODUCT_DELIVERY,  # CNC
+                        quantity          = result.position_sizing["shares"],
+                        segment           = groww_client._groww.SEGMENT_CASH,
+                        trading_symbol    = result.symbol,
+                        transaction_type  = groww_client._groww.TRANSACTION_TYPE_BUY,
+                        price             = 0.0,
+                    )
+                    st.success(f"Order placed: {order_result}")
+            except Exception as e:
+                st.error(f"Order failed: {e}")
+    with col2:
+        st.button("Cancel", key=f"cancel_{result.symbol}_{result.timestamp}")

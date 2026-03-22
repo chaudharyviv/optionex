@@ -125,6 +125,82 @@ class OptionsRiskParameters(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────
+# PYDANTIC OUTPUT MODELS — SWING TRADING (CASH SEGMENT)
+# ─────────────────────────────────────────────────────────────────
+
+class SwingMarketAnalysis(BaseModel):
+    """Agent 1 output — Swing Market Analyst."""
+    market_regime:          str
+    nifty_context:          str
+    vix_regime:             str
+    trend_direction:        str
+    trend_strength:         str
+    above_ema200:           bool
+    ema_alignment:          str
+    setup_type:             str
+    setup_quality:          str
+    key_level:              float
+    entry_rationale:        str
+    key_support_levels:     list[float]
+    key_resistance_levels:  list[float]
+    volume_verdict:         str
+    oi_verdict:             str
+    momentum_verdict:       str
+    rsi_assessment:         str
+    macd_assessment:        str
+    fib_context:            Optional[str] = None
+    risk_factors:           list[str]
+    overall_bias:           str
+    bias_confidence:        int
+    primary_thesis:         str
+    analyst_notes:          str
+
+
+class SwingSetupDecision(BaseModel):
+    """Agent 2 output — Swing Setup Selector."""
+    action:                 str
+    entry_price:            float
+    entry_type:             str
+    entry_trigger:          Optional[str] = None
+    stop_loss:              float
+    stop_loss_basis:        str
+    target_1:               float
+    target_2:               float
+    target_basis:           str
+    hold_days:              int
+    risk_reward_ratio:      float
+    confidence:             int
+    signal_quality:         str
+    confluence_score:       float
+    primary_reason:         str
+    supporting_factors:     list[str]
+    contradicting_factors:  list[str]
+    invalidation_condition: str
+    exit_plan:              str
+    watch_reasoning:        Optional[str] = None
+    avoid_reasoning:        Optional[str] = None
+
+
+class SwingRiskParameters(BaseModel):
+    """Agent 3 output — Swing Risk Assessor."""
+    entry_price:            float
+    stop_loss:              float
+    target_1:               float
+    target_2:               float
+    risk_per_share:         float
+    risk_reward_ratio:      float
+    max_hold_days:          int
+    exit_strategy:          str
+    adjustment_plan:        str
+    execution_notes:        str
+    liquidity_concern:      bool
+    sector_risk:            str
+    event_risk:             str
+    risk_approved:          bool
+    risk_block_reason:      Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────────
 # PROMPT LOADER
 # ─────────────────────────────────────────────────────────────────
 

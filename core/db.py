@@ -210,9 +210,91 @@ def init():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS swing_signals_log (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            symbol              TEXT NOT NULL,
+            exchange            TEXT NOT NULL DEFAULT 'NSE',
+            mode                TEXT NOT NULL,
+            llm_provider        TEXT NOT NULL,
+            llm_model           TEXT NOT NULL,
+     
+            setup_type          TEXT,
+            direction           TEXT,
+            signal_quality      TEXT,
+     
+            entry_price         REAL,
+            stop_loss           REAL,
+            target_1            REAL,
+            target_2            REAL,
+            hold_days           INTEGER,
+            risk_reward         REAL,
+            sector              TEXT,
+     
+            action              TEXT NOT NULL,
+            confidence          INTEGER,
+            approved            INTEGER DEFAULT 0,
+            block_reason        TEXT,
+     
+            shares              INTEGER,
+            position_value      REAL,
+            actual_risk_inr     REAL,
+            actual_risk_pct     REAL,
+     
+            spot_price          REAL,
+            india_vix           REAL,
+            market_regime       TEXT,
+            data_quality        TEXT,
+            sanity_passed       INTEGER DEFAULT 1,
+            primary_reason      TEXT,
+     
+            followed            INTEGER DEFAULT NULL,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+ 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS swing_trades_log (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            signal_id           INTEGER REFERENCES swing_signals_log(id),
+            symbol              TEXT NOT NULL,
+            exchange            TEXT NOT NULL DEFAULT 'NSE',
+            setup_type          TEXT,
+            mode                TEXT NOT NULL,
+     
+            shares              INTEGER NOT NULL,
+            entry_price         REAL,
+            entry_time          DATETIME,
+            entry_order_id      TEXT,
+     
+            stop_loss           REAL,
+            target_1            REAL,
+            target_2            REAL,
+     
+            exit_price          REAL,
+            exit_time           DATETIME,
+            exit_reason         TEXT,
+            exit_order_id       TEXT,
+     
+            pnl_per_share       REAL,
+            pnl_total           REAL,
+            pnl_pct             REAL,
+            hold_days_actual    INTEGER,
+     
+            sector              TEXT,
+            india_vix_at_entry  REAL,
+            order_status        TEXT DEFAULT 'MANUAL',
+            notes               TEXT,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
     logger.info(f"Database initialised at {DB_PATH}")
+
+    
 
 
 def health_check() -> dict:
@@ -222,6 +304,8 @@ def health_check() -> dict:
         "iv_history", "chain_snapshots",
         "news_cache", "market_cache",
         "daily_summary", "prompt_versions",
+        "swing_signals_log",    # ← ADD
+        "swing_trades_log",     # ← ADD
     }
     try:
         conn = get_connection()
@@ -238,3 +322,6 @@ def health_check() -> dict:
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+

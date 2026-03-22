@@ -413,3 +413,146 @@ def validate_config() -> list[str]:
         )
 
     return config_warnings
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SWINGTRADE — Config additions
+# Append this block to the bottom of your existing config.py
+# ═══════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────
+# SWING TRADING — CASH SEGMENT
+# ─────────────────────────────────────────────────────────────────
+
+# Universe and screener
+SWING_UNIVERSE              = os.getenv("SWING_UNIVERSE", "nifty_500")
+SWING_MAX_SCREENED          = int(os.getenv("SWING_MAX_SCREENED", 20))     # max shortlist before LLM
+SWING_MAX_OPEN_TRADES       = int(os.getenv("SWING_MAX_OPEN_TRADES", 6))
+
+# Capital and risk
+SWING_CAPITAL_INR           = float(os.getenv("SWING_CAPITAL_INR", CAPITAL_INR))
+SWING_RISK_PCT_PER_TRADE    = float(os.getenv("SWING_RISK_PCT_PER_TRADE", 1.5))   # 1.5% max loss per trade
+SWING_CAPITAL_PCT_PER_TRADE = float(os.getenv("SWING_CAPITAL_PCT_PER_TRADE", 8.0)) # max 8% of capital per position
+SWING_MIN_RR                = float(os.getenv("SWING_MIN_RR", 2.0))
+SWING_MIN_CONFIDENCE        = int(os.getenv("SWING_MIN_CONFIDENCE", 60))
+
+# Hold duration (trading days)
+SWING_HOLD_DAYS_MIN         = 5
+SWING_HOLD_DAYS_MAX         = 15
+
+# VIX gate — block new longs when VIX is extreme
+SWING_VIX_MAX_LONGS         = float(os.getenv("SWING_VIX_MAX_LONGS", 22.0))
+
+# Hard filters — all non-negotiable, not LLM-decided
+SWING_HARD_FILTERS = {
+    "min_price_inr":          50,        # no penny stocks
+    "min_market_cap_cr":      500,       # ₹500 Cr minimum market cap
+    "max_promoter_pledge_pct": 30,       # flag if promoters have pledged > 30%
+    "results_blackout_days":  10,        # don't enter within 10 days of results
+    "exclude_asm_gsm":        True,      # NSE Additional / Graded Surveillance
+    "min_avg_daily_volume":   500_000,   # 5 lakh shares average daily
+}
+
+# Soft screening criteria — stock must pass ≥ 2
+SWING_SOFT_SCREENS = [
+    "near_52w_high",          # within 5% of 52-week high
+    "volume_surge_1_5x",      # volume > 1.5× 20-day average
+    "ema20_above_ema50",      # short-term EMA above medium
+    "rsi_between_50_70",      # momentum sweet spot
+    "supertrend_bullish",     # supertrend confirming
+    "bb_breakout",            # Bollinger Band squeeze breakout
+    "adx_above_25",           # trending (not ranging)
+]
+
+# Confidence caps (mirrors options caps pattern)
+SWING_CONFIDENCE_CAP_VIX_HIGH   = 65   # VIX > 22 caps new long confidence
+SWING_CONFIDENCE_CAP_NO_NEWS    = 70
+SWING_CONFIDENCE_CAP_RESULTS    = 55   # within results window
+
+# B-grade position reduction (same as options)
+SWING_B_GRADE_REDUCTION         = 0.6  # 60% of normal size
+
+# Sector concentration limit
+SWING_MAX_SECTOR_CONCENTRATION  = 0.30  # 30% of open trades in same sector
+
+
+# ─────────────────────────────────────────────────────────────────
+# SWING POSITION SIZING — CASH SEGMENT
+#
+# Cash segment is simpler than F&O — no lot sizes.
+# Position size = how many shares to buy.
+#
+# Formula:
+#   risk_budget = capital × risk_pct / 100
+#   risk_per_share = entry_price - stop_loss
+#   shares = floor(risk_budget / risk_per_share)
+#   position_value = shares × entry_price
+#   if position_value > capital × capital_pct / 100:
+#       shares = floor((capital × capital_pct / 100) / entry_price)
+#
+# Example — RELIANCE at ₹2900, SL at ₹2830, capital ₹5L:
+#   risk_budget = 5,00,000 × 1.5% = ₹7,500
+#   risk_per_share = 2900 - 2830 = ₹70
+#   raw_shares = 7500 / 70 = 107 shares
+#   position_value = 107 × 2900 = ₹3,10,300 (62% of capital) — capped!
+#   capital_cap = 5,00,000 × 8% = ₹40,000 → 13 shares
+#   actual_risk = 13 × 70 = ₹910 (well within budget — fine)
+# ─────────────────────────────────────────────────────────────────
+
+def get_swing_position_size(
+    symbol:         str,
+    entry_price:    float,
+    stop_loss:      float,
+    signal_quality: str   = "A",
+    capital:        float = None,
+) -> dict:
+    """
+    Calculate position size for cash segment swing trade.
+    Returns shares to buy, position value, actual risk.
+    Deterministic — never let LLM compute this.
+    """
+    capital      = capital or SWING_CAPITAL_INR
+    risk_pct     = SWING_RISK_PCT_PER_TRADE
+    capital_pct  = SWING_CAPITAL_PCT_PER_TRADE
+
+    if signal_quality == "B":
+        risk_pct    = risk_pct    * SWING_B_GRADE_REDUCTION
+        capital_pct = capital_pct * SWING_B_GRADE_REDUCTION
+
+    risk_budget   = capital * (risk_pct / 100)
+    capital_cap   = capital * (capital_pct / 100)
+
+    risk_per_share = entry_price - stop_loss
+    if risk_per_share <= 0:
+        return {
+            "error":  "Stop loss must be below entry price",
+            "shares": 0,
+        }
+
+    # Risk-based shares
+    raw_shares   = risk_budget / risk_per_share
+    shares       = max(1, int(raw_shares))
+
+    # Capital concentration cap
+    position_val = shares * entry_price
+    if position_val > capital_cap:
+        shares      = max(1, int(capital_cap / entry_price))
+        position_val = shares * entry_price
+
+    actual_risk    = shares * risk_per_share
+    actual_risk_pct = actual_risk / capital * 100
+
+    return {
+        "symbol":           symbol,
+        "entry_price":      round(entry_price, 2),
+        "stop_loss":        round(stop_loss, 2),
+        "risk_per_share":   round(risk_per_share, 2),
+        "risk_budget_inr":  round(risk_budget, 2),
+        "capital_cap_inr":  round(capital_cap, 2),
+        "shares":           shares,
+        "position_value":   round(position_val, 2),
+        "actual_risk_inr":  round(actual_risk, 2),
+        "actual_risk_pct":  round(actual_risk_pct, 3),
+        "b_grade_reduced":  signal_quality == "B",
+        "error":            None,
+    }
