@@ -221,7 +221,7 @@ def render_sidebar():
         st.caption("Navigate:")
         selection = st.radio(
             "Navigation",
-            options=["Home", "Dashboard", "Signal Engine", "Trade Log", "Settings"],
+            options=["Home", "Dashboard", "Signal Engine", "Trade Log", "Swing Trading", "Settings"],
             label_visibility="collapsed"
         )
         st.divider()
